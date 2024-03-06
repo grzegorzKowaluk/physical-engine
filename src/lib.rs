@@ -1,71 +1,182 @@
-use std::cell::Cell;
-use std::rc::Rc;
-use wasm_bindgen::prelude::*;
+use winit::{
+    dpi::PhysicalSize,
+    event::*,
+    event_loop::EventLoopBuilder,
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowBuilder},
+};
 
-#[wasm_bindgen]
-pub fn start() -> Result<(), JsValue> {
-    let window = web_sys::window().unwrap();
-    let document = window.document().unwrap();
-    let canvas = document
-        .create_element("canvas")?
-        .dyn_into::<web_sys::HtmlCanvasElement>()?;
-    document.body().unwrap().append_child(&canvas)?;
-    canvas.style().set_property("border", "solid")?;
-    let context = canvas
-        .get_context("2d")?
-        .unwrap()
-        .dyn_into::<web_sys::CanvasRenderingContext2d>()?;
-    canvas.set_width(window.inner_width().unwrap().as_f64().unwrap() as u32);
-    canvas.set_height(window.inner_height().unwrap().as_f64().unwrap() as u32);
-    let context = Rc::new(context);
-    let pressed = Rc::new(Cell::new(false));
-    let canvas = Rc::new(canvas);
-    {
-        let canvas = canvas.clone();
-        let closure = Closure::<dyn FnMut(_)>::new(move |_event: web_sys::UiEvent| {
-            canvas.set_width(window.inner_width().unwrap().as_f64().unwrap() as u32);
-            canvas.set_height(window.inner_height().unwrap().as_f64().unwrap() as u32);
-        });
-        web_sys::window()
-            .unwrap()
-            .add_event_listener_with_callback("resize", closure.as_ref().unchecked_ref())
+struct State<'a> {
+    surface: wgpu::Surface<'a>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    size: PhysicalSize<u32>,
+    window: &'a Window,
+}
+
+impl<'a> State<'a> {
+    async fn new(window: &'a Window) -> Self {
+        let size = window.inner_size();
+        let instance_descriptor = wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            ..Default::default()
+        };
+        let instance = wgpu::Instance::new(instance_descriptor);
+        let surface = instance.create_surface(window).unwrap();
+        let adapter_descriptor = wgpu::RequestAdapterOptionsBase {
+            power_preference: wgpu::PowerPreference::default(),
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        };
+        let adapter = instance.request_adapter(&adapter_descriptor).await.unwrap();
+        let device_descriptor = wgpu::DeviceDescriptor {
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            label: Some("Device"),
+        };
+        let (device, queue) = adapter
+            .request_device(&device_descriptor, None)
+            .await
             .unwrap();
-        closure.forget();
+        let surface_capabilities = surface.get_capabilities(&adapter);
+        let surface_format = surface_capabilities
+            .formats
+            .iter()
+            .copied()
+            .filter(|f| f.is_srgb())
+            .next()
+            .unwrap_or(surface_capabilities.formats[0]);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
+            present_mode: surface_capabilities.present_modes[0],
+            alpha_mode: surface_capabilities.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        Self {
+            window,
+            surface,
+            device,
+            queue,
+            config,
+            size,
+        }
     }
-    {
-        let context = context.clone();
-        let pressed = pressed.clone();
-        let closure = Closure::<dyn FnMut(_)>::new(move |event: web_sys::MouseEvent| {
-            context.begin_path();
-            context.move_to(event.offset_x() as f64, event.offset_y() as f64);
-            pressed.set(true);
-        });
-        canvas.add_event_listener_with_callback("mousedown", closure.as_ref().unchecked_ref())?;
-        closure.forget();
+    fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        if new_size.width > 0 && new_size.height > 0 {
+            self.size = new_size;
+            self.config.width = new_size.width;
+            self.config.height = new_size.height;
+            self.surface.configure(&self.device, &self.config);
+        }
     }
-    {
-        let context = context.clone();
-        let pressed = pressed.clone();
-        let closure = Closure::<dyn FnMut(_)>::new(move |event: web_sys::MouseEvent| {
-            if pressed.get() {
-                context.line_to(event.offset_x() as f64, event.offset_y() as f64);
-                context.stroke();
-                context.begin_path();
-                context.move_to(event.offset_x() as f64, event.offset_y() as f64);
-            }
-        });
-        canvas.add_event_listener_with_callback("mousemove", closure.as_ref().unchecked_ref())?;
-        closure.forget();
-    }
-    {
-        let closure = Closure::<dyn FnMut(_)>::new(move |event: web_sys::MouseEvent| {
-            pressed.set(false);
-            context.line_to(event.offset_x() as f64, event.offset_y() as f64);
-            context.stroke();
-        });
-        canvas.add_event_listener_with_callback("mouseup", closure.as_ref().unchecked_ref())?;
-        closure.forget();
-    }
+    // fn input(&mut self, event: &WindowEvent) -> bool {
+    //     todo!()
+    // }
 
-    Ok(())
+    fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let drawable = self.surface.get_current_texture()?;
+        let image_view_descriptor = wgpu::TextureViewDescriptor::default();
+        let image_view = drawable.texture.create_view(&image_view_descriptor);
+
+        let command_encoder_descriptor = wgpu::CommandEncoderDescriptor {
+            label: Some("Render Encoder"),
+        };
+
+        let mut command_encoder = self
+            .device
+            .create_command_encoder(&command_encoder_descriptor);
+
+        let color_attachment = wgpu::RenderPassColorAttachment {
+            view: &image_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color {
+                    r: 0.75,
+                    g: 0.5,
+                    b: 0.25,
+                    a: 1.0,
+                }),
+                store: wgpu::StoreOp::Store,
+            },
+        };
+
+        let render_pass_descriptor = wgpu::RenderPassDescriptor {
+            label: Some("Render Pass"),
+            color_attachments: &[Some(color_attachment)],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+        };
+
+        // {
+        // let render_pass = command_encoder.begin_render_pass(&render_pass_descriptor);
+        // }
+        command_encoder.begin_render_pass(&render_pass_descriptor);
+        self.queue.submit(std::iter::once(command_encoder.finish()));
+        drawable.present();
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CustomEvent {
+    Timer,
+}
+
+pub async fn run() {
+    env_logger::init();
+    let event_loop = EventLoopBuilder::<CustomEvent>::with_user_event()
+        .build()
+        .unwrap();
+    let window = WindowBuilder::new().build(&event_loop).unwrap();
+    let event_loop_proxy = event_loop.create_proxy();
+
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        event_loop_proxy.send_event(CustomEvent::Timer).ok();
+    });
+
+    let mut state = State::new(&window).await;
+
+    event_loop
+        .run(move |event, event_loop_window_target| match event {
+            Event::UserEvent(..) => {
+                state.window.request_redraw();
+            }
+            Event::WindowEvent {
+                window_id,
+                ref event,
+            } if window_id == state.window.id() => match event {
+                WindowEvent::CloseRequested
+                | WindowEvent::KeyboardInput {
+                    event:
+                        KeyEvent {
+                            physical_key: PhysicalKey::Code(KeyCode::Escape),
+                            state: ElementState::Pressed,
+                            repeat: false,
+                            ..
+                        },
+                    ..
+                } => {
+                    println!("Goodbye!");
+                    event_loop_window_target.exit();
+                }
+                WindowEvent::RedrawRequested => match state.render() {
+                    Ok(()) => (),
+                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop_window_target.exit(),
+                    Err(e) => eprintln!("uyWQGdyugqyudgywwj{:?}", e),
+                },
+                WindowEvent::Resized(physical_size) => state.resize(*physical_size),
+                _ => {}
+            },
+            _ => {}
+        })
+        .expect("Event loop failed");
 }
