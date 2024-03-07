@@ -1,11 +1,21 @@
+use log::warn;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub async fn start() {
+    console_error_panic_hook::set_once();
+    run().await;
+}
+
 use winit::{
     dpi::PhysicalSize,
     event::*,
-    event_loop::EventLoopBuilder,
+    event_loop::EventLoop,
     keyboard::{KeyCode, PhysicalKey},
     window::{Window, WindowBuilder},
 };
-
 struct State<'a> {
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,
@@ -67,11 +77,23 @@ impl<'a> State<'a> {
         }
     }
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            self.size = new_size;
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
+        cfg_if::cfg_if! {
+            if #[cfg(target_arch = "wasm32")] {
+                warn!("You are trying to resize window with width: {} and height: {}", self.window.inner_size().width, self.window.inner_size().height);
+                if new_size.width > 0 && new_size.height > 0 && new_size.width < 1000 && new_size.height < 720 {
+                    self.size = new_size;
+                    self.config.width = new_size.width;
+                    self.config.height = new_size.height;
+                    self.surface.configure(&self.device, &self.config);
+                }
+            } else {
+                if new_size.width > 0 && new_size.height > 0 {
+                    self.size = new_size;
+                    self.config.width = new_size.width;
+                    self.config.height = new_size.height;
+                    self.surface.configure(&self.device, &self.config);
+            }
+        }
         }
     }
     // fn input(&mut self, event: &WindowEvent) -> bool {
@@ -124,31 +146,34 @@ impl<'a> State<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum CustomEvent {
-    Timer,
-}
-
 pub async fn run() {
-    env_logger::init();
-    let event_loop = EventLoopBuilder::<CustomEvent>::with_user_event()
-        .build()
-        .unwrap();
+    cfg_if::cfg_if! {
+        if #[cfg(target_arch = "wasm32")] {
+            std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+            console_log::init_with_level(log::Level::Warn).expect("Couldn't initialize logger");
+        } else {
+            env_logger::init();
+        }
+    }
+
+    let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
-    let event_loop_proxy = event_loop.create_proxy();
 
-    std::thread::spawn(move || loop {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        event_loop_proxy.send_event(CustomEvent::Timer).ok();
-    });
-
+    #[cfg(target_arch = "wasm32")]
+    {
+        use winit::platform::web::WindowExtWebSys;
+        web_sys::window()
+            .and_then(|win| win.document())
+            .and_then(|doc| {
+                let canvas = web_sys::Element::from(window.canvas().unwrap());
+                doc.body()?.append_child(&canvas).ok()?;
+                Some(())
+            })
+            .expect("Couldn't append canvas to document body.");
+    }
     let mut state = State::new(&window).await;
-
     event_loop
         .run(move |event, event_loop_window_target| match event {
-            Event::UserEvent(..) => {
-                state.window.request_redraw();
-            }
             Event::WindowEvent {
                 window_id,
                 ref event,
@@ -171,7 +196,7 @@ pub async fn run() {
                     Ok(()) => (),
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                     Err(wgpu::SurfaceError::OutOfMemory) => event_loop_window_target.exit(),
-                    Err(e) => eprintln!("uyWQGdyugqyudgywwj{:?}", e),
+                    Err(e) => eprintln!("{:?}", e),
                 },
                 WindowEvent::Resized(physical_size) => state.resize(*physical_size),
                 _ => {}
