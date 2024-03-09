@@ -1,4 +1,3 @@
-use log::warn;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
@@ -54,8 +53,7 @@ impl<'a> State<'a> {
             .formats
             .iter()
             .copied()
-            .filter(|f| f.is_srgb())
-            .next()
+            .find(|f| f.is_srgb())
             .unwrap_or(surface_capabilities.formats[0]);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -79,6 +77,7 @@ impl<'a> State<'a> {
     fn resize(&mut self, new_size: PhysicalSize<u32>) {
         cfg_if::cfg_if! {
             if #[cfg(target_arch = "wasm32")] {
+                use log::warn;
                 warn!("You are trying to resize window with width: {} and height: {}", self.window.inner_size().width, self.window.inner_size().height);
                 if new_size.width > 0 && new_size.height > 0 && new_size.width < 1000 && new_size.height < 720 {
                     self.size = new_size;
@@ -156,8 +155,8 @@ pub async fn run() {
         }
     }
 
-    let event_loop = EventLoop::new().unwrap();
-    let window = WindowBuilder::new().build(&event_loop).unwrap();
+    let event_loop = EventLoop::new().expect("event loop should be created by the winit::EventLoop");
+    let window = WindowBuilder::new().build(&event_loop).expect("window should be created by system look for: denied permission, incompatible system, or lack of memory");
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -169,7 +168,7 @@ pub async fn run() {
                 doc.body()?.append_child(&canvas).ok()?;
                 Some(())
             })
-            .expect("Couldn't append canvas to document body.");
+            .expect("couldn't append canvas to document body.");
     }
     let mut state = State::new(&window).await;
     event_loop
