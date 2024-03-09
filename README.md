@@ -12,3 +12,5 @@
     import * as wasm from "physical-engine";wasm.start();
     ```
   - run "npm run start"
+
+or just run run_wasm.bat
