@@ -1,3 +1,4 @@
+use log::info;
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 
@@ -22,6 +23,7 @@ struct State<'a> {
     config: wgpu::SurfaceConfiguration,
     size: PhysicalSize<u32>,
     window: &'a Window,
+    clear_color: wgpu::Color,
 }
 
 impl<'a> State<'a> {
@@ -41,7 +43,11 @@ impl<'a> State<'a> {
         let adapter = instance.request_adapter(&adapter_descriptor).await.unwrap();
         let device_descriptor = wgpu::DeviceDescriptor {
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::default(),
+            required_limits: if cfg!(target_arch = "wasm32") {
+                wgpu::Limits::downlevel_webgl2_defaults()
+            } else {
+                wgpu::Limits::default()
+            },
             label: Some("Device"),
         };
         let (device, queue) = adapter
@@ -65,6 +71,8 @@ impl<'a> State<'a> {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
+
+        let clear_color = wgpu::Color::BLACK;
         Self {
             window,
             surface,
@@ -72,32 +80,66 @@ impl<'a> State<'a> {
             queue,
             config,
             size,
+            clear_color,
         }
     }
-    fn resize(&mut self, new_size: PhysicalSize<u32>) {
+    fn resize(&mut self, _new_size: PhysicalSize<u32>) {
         cfg_if::cfg_if! {
-            if #[cfg(target_arch = "wasm32")] {
-                use log::warn;
-                warn!("You are trying to resize window with width: {} and height: {}", self.window.inner_size().width, self.window.inner_size().height);
-                if new_size.width > 0 && new_size.height > 0 && new_size.width < 1000 && new_size.height < 720 {
-                    self.size = new_size;
-                    self.config.width = new_size.width;
-                    self.config.height = new_size.height;
-                    self.surface.configure(&self.device, &self.config);
-                }
-            } else {
-                if new_size.width > 0 && new_size.height > 0 {
-                    self.size = new_size;
-                    self.config.width = new_size.width;
-                    self.config.height = new_size.height;
-                    self.surface.configure(&self.device, &self.config);
-            }
-        }
+              if #[cfg(target_arch = "wasm32")] {
+                  self.size = PhysicalSize {width:1000, height:800};
+                  self.config.width = 1000;
+                  self.config.height = 600;
+                  self.surface.configure(&self.device, &self.config);
+              } else {
+                  if _new_size.width > 0 && _new_size.height > 0 {
+                      self.size = _new_size;
+                      self.config.width = _new_size.width;
+                      self.config.height = _new_size.height;
+                      self.surface.configure(&self.device, &self.config);
+              }
+          }
         }
     }
-    // fn input(&mut self, event: &WindowEvent) -> bool {
-    //     todo!()
-    // }
+    fn input(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::MouseInput { .. } => {
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                let r: f64 = rng.gen();
+                let b: f64 = rng.gen();
+                self.clear_color = wgpu::Color {
+                    r: r / self.size.width as f64,
+                    g: b / self.size.height as f64,
+                    b: 1.0,
+                    a: 1.0,
+                };
+                true
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::KeyA),
+                        state: ElementState::Pressed,
+                        repeat: false,
+                        ..
+                    },
+                ..
+            } => {
+                use rand::Rng;
+                let mut rng = rand::thread_rng();
+                let r: f64 = rng.gen();
+                let b: f64 = rng.gen();
+                self.clear_color = wgpu::Color {
+                    r: r / self.size.width as f64,
+                    g: b / self.size.height as f64,
+                    b: 1.0,
+                    a: 1.0,
+                };
+                true
+            }
+            _ => false,
+        }
+    }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let drawable = self.surface.get_current_texture()?;
@@ -116,12 +158,7 @@ impl<'a> State<'a> {
             view: &image_view,
             resolve_target: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color {
-                    r: 0.75,
-                    g: 0.5,
-                    b: 0.25,
-                    a: 1.0,
-                }),
+                load: wgpu::LoadOp::Clear(self.clear_color),
                 store: wgpu::StoreOp::Store,
             },
         };
@@ -155,7 +192,8 @@ pub async fn run() {
         }
     }
 
-    let event_loop = EventLoop::new().expect("event loop should be created by the winit::EventLoop");
+    let event_loop =
+        EventLoop::new().expect("event loop should be created by the winit::EventLoop");
     let window = WindowBuilder::new().build(&event_loop).expect("window should be created by system look for: denied permission, incompatible system, or lack of memory");
 
     #[cfg(target_arch = "wasm32")]
@@ -176,30 +214,34 @@ pub async fn run() {
             Event::WindowEvent {
                 window_id,
                 ref event,
-            } if window_id == state.window.id() => match event {
-                WindowEvent::CloseRequested
-                | WindowEvent::KeyboardInput {
-                    event:
-                        KeyEvent {
-                            physical_key: PhysicalKey::Code(KeyCode::Escape),
-                            state: ElementState::Pressed,
-                            repeat: false,
+            } if window_id == state.window.id() => {
+                if !state.input(event) {
+                    match event {
+                        WindowEvent::CloseRequested
+                        | WindowEvent::KeyboardInput {
+                            event:
+                                KeyEvent {
+                                    physical_key: PhysicalKey::Code(KeyCode::Escape),
+                                    state: ElementState::Pressed,
+                                    repeat: false,
+                                    ..
+                                },
                             ..
+                        } => {
+                            println!("Goodbye!");
+                            event_loop_window_target.exit();
+                        }
+                        WindowEvent::RedrawRequested => match state.render() {
+                            Ok(()) => (),
+                            Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                            Err(wgpu::SurfaceError::OutOfMemory) => event_loop_window_target.exit(),
+                            Err(e) => eprintln!("{:?}", e),
                         },
-                    ..
-                } => {
-                    println!("Goodbye!");
-                    event_loop_window_target.exit();
+                        WindowEvent::Resized(physical_size) => state.resize(*physical_size),
+                        _ => {}
+                    }
                 }
-                WindowEvent::RedrawRequested => match state.render() {
-                    Ok(()) => (),
-                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop_window_target.exit(),
-                    Err(e) => eprintln!("{:?}", e),
-                },
-                WindowEvent::Resized(physical_size) => state.resize(*physical_size),
-                _ => {}
-            },
+            }
             _ => {}
         })
         .expect("Event loop failed");
